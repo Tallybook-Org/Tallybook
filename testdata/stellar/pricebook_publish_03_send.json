@@ -1,0 +1,10 @@
+{
+  "jsonrpc": "2.0",
+  "id": 103,
+  "result": {
+    "status": "PENDING",
+    "hash": "9bf5edffad2c4dc70fa82e26b042dfc8b7d704a0054749154bfac064192fe68c",
+    "latestLedger": 4611942,
+    "latestLedgerCloseTime": "1789083297"
+  }
+}

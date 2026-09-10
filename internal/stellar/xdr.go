@@ -308,6 +308,17 @@ func DecodeMap(v xdr.ScVal) (map[string]xdr.ScVal, error) {
 	return out, nil
 }
 
+// MapField looks up key in a map already decoded by DecodeMap, returning a
+// clear error naming the missing field rather than a zero ScVal a caller
+// might silently decode further.
+func MapField(m map[string]xdr.ScVal, key string) (xdr.ScVal, error) {
+	v, ok := m[key]
+	if !ok {
+		return xdr.ScVal{}, fmt.Errorf("stellar: map missing field %q", key)
+	}
+	return v, nil
+}
+
 // --- base64 XDR codec, for RPC request/response payloads ---
 
 // MarshalScValBase64 XDR-encodes v and base64-encodes the result, the
