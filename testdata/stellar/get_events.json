@@ -1,0 +1,61 @@
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "events": [
+      {
+        "type": "contract",
+        "ledger": 4611150,
+        "ledgerClosedAt": "2026-09-10T22:28:57Z",
+        "contractId": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+        "id": "0019804738446950400-0000000000",
+        "operationIndex": 0,
+        "transactionIndex": 0,
+        "txHash": "3c5f3ab3ed8e15dbf2f82e8031eda0f85d8abb186a549f78276885474f25f365",
+        "inSuccessfulContractCall": false,
+        "topic": [
+          "AAAADwAAAANmZWUA",
+          "AAAAEgAAAAAAAAAAA+0oimKONzC713z+Cl8orRHR8/s0JY+JMothA0fY7bY="
+        ],
+        "value": "AAAACgAAAAAAAAAAAAAAAAAAAGQ="
+      },
+      {
+        "type": "contract",
+        "ledger": 4611150,
+        "ledgerClosedAt": "2026-09-10T22:28:57Z",
+        "contractId": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+        "id": "0019804738446950400-0000000001",
+        "operationIndex": 0,
+        "transactionIndex": 0,
+        "txHash": "a55f146e117abdd29fb6643168e10f03fca79a761091355ea03effff3d44739a",
+        "inSuccessfulContractCall": true,
+        "topic": [
+          "AAAADwAAAANmZWUA",
+          "AAAAEgAAAAAAAAAA6Q2O5pNiZ7WmOtV1yq+It108GGP8idtoFKKy+4qrpvA="
+        ],
+        "value": "AAAACgAAAAAAAAAAAAAAAAAAaTM="
+      },
+      {
+        "type": "contract",
+        "ledger": 4611150,
+        "ledgerClosedAt": "2026-09-10T22:28:57Z",
+        "contractId": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+        "id": "0019804738446950400-0000000002",
+        "operationIndex": 0,
+        "transactionIndex": 0,
+        "txHash": "05fe10cdde1012fb656c3f8b4e0c1ecaed07890478594cb9e8ad7fd1a65ec3e1",
+        "inSuccessfulContractCall": true,
+        "topic": [
+          "AAAADwAAAANmZWUA",
+          "AAAAEgAAAAAAAAAAZnYwtpgeUB4mlva1EnnCVBm0hGxbz5B5Zl89BaJLufM="
+        ],
+        "value": "AAAACgAAAAAAAAAAAAAAAAAAQzs="
+      }
+    ],
+    "cursor": "0019804738446950400-0000000002",
+    "latestLedger": 4611230,
+    "oldestLedger": 4490271,
+    "latestLedgerCloseTime": "1789079737",
+    "oldestLedgerCloseTime": "1788474942"
+  }
+}

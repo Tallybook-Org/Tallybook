@@ -1,0 +1,314 @@
+package stellar
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// fixtureServer returns an httptest.Server that replays the recorded
+// response in testdata/stellar/<name>.json verbatim, and a func returning
+// the last request body it received (for asserting what the client sent).
+func fixtureServer(t *testing.T, name string) (*httptest.Server, func() []byte) {
+	t.Helper()
+	path := filepath.Join("..", "..", "testdata", "stellar", name+".json")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read fixture %s: %v", path, err)
+	}
+
+	var lastRequest []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lastRequest, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func() []byte { return lastRequest }
+}
+
+func TestClient_GetLatestLedger(t *testing.T) {
+	srv, lastRequest := fixtureServer(t, "get_latest_ledger")
+	c := NewClient(srv.URL, nil)
+
+	result, err := c.GetLatestLedger(context.Background())
+	if err != nil {
+		t.Fatalf("GetLatestLedger returned unexpected error: %v", err)
+	}
+	if result.ID != "ebf0cf5947dd21719178d9f34bef992e6e5e197db9debc54c5761d1937772321" {
+		t.Errorf("ID = %q", result.ID)
+	}
+	if result.ProtocolVersion != 28 {
+		t.Errorf("ProtocolVersion = %d, want 28", result.ProtocolVersion)
+	}
+	if result.Sequence != 4611229 {
+		t.Errorf("Sequence = %d, want 4611229", result.Sequence)
+	}
+	if result.CloseTime != "1789079732" {
+		t.Errorf("CloseTime = %q, want 1789079732", result.CloseTime)
+	}
+	if result.HeaderXDR == "" || result.MetadataXDR == "" {
+		t.Error("HeaderXDR/MetadataXDR should not be empty")
+	}
+
+	req := string(lastRequest())
+	if !containsAll(req, `"method":"getLatestLedger"`, `"jsonrpc":"2.0"`) {
+		t.Errorf("request body %s does not look like a getLatestLedger call", req)
+	}
+	if containsAll(req, `"params"`) {
+		t.Errorf("request body %s should omit params for a no-parameter method", req)
+	}
+}
+
+func TestClient_GetEvents(t *testing.T) {
+	srv, _ := fixtureServer(t, "get_events")
+	c := NewClient(srv.URL, nil)
+
+	result, err := c.GetEvents(context.Background(), GetEventsParams{
+		StartLedger: 4611150,
+		Pagination:  &EventsPagination{Limit: 3},
+	})
+	if err != nil {
+		t.Fatalf("GetEvents returned unexpected error: %v", err)
+	}
+	if len(result.Events) != 3 {
+		t.Fatalf("got %d events, want 3", len(result.Events))
+	}
+	first := result.Events[0]
+	if first.Type != "contract" {
+		t.Errorf("Events[0].Type = %q, want contract", first.Type)
+	}
+	if first.ContractID != "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC" {
+		t.Errorf("Events[0].ContractID = %q", first.ContractID)
+	}
+	if first.ID != "0019804738446950400-0000000000" {
+		t.Errorf("Events[0].ID = %q", first.ID)
+	}
+	if len(first.Topic) != 2 {
+		t.Errorf("Events[0].Topic has %d entries, want 2", len(first.Topic))
+	}
+	if result.Cursor == "" {
+		t.Error("Cursor should not be empty")
+	}
+	if result.LatestLedgerCloseTime == "" {
+		t.Error("LatestLedgerCloseTime should not be empty")
+	}
+}
+
+func TestClient_GetLedgerEntries(t *testing.T) {
+	srv, lastRequest := fixtureServer(t, "get_ledger_entries")
+	c := NewClient(srv.URL, nil)
+
+	key := "AAAABgAAAAHXkotywnA8z+r365/0701QSlWouXn8m0UOoshCtNHOYQAAABQAAAAB"
+	result, err := c.GetLedgerEntries(context.Background(), []string{key})
+	if err != nil {
+		t.Fatalf("GetLedgerEntries returned unexpected error: %v", err)
+	}
+	if len(result.Entries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(result.Entries))
+	}
+	entry := result.Entries[0]
+	if entry.Key != key {
+		t.Errorf("Entries[0].Key = %q, want %q", entry.Key, key)
+	}
+	if entry.LastModifiedLedgerSeq != 4609662 {
+		t.Errorf("LastModifiedLedgerSeq = %d, want 4609662", entry.LastModifiedLedgerSeq)
+	}
+	if entry.LiveUntilLedgerSeq != 7561567 {
+		t.Errorf("LiveUntilLedgerSeq = %d, want 7561567", entry.LiveUntilLedgerSeq)
+	}
+	if entry.ExtXDR == "" {
+		t.Error("ExtXDR should not be empty — the live response included it")
+	}
+
+	req := string(lastRequest())
+	if !containsAll(req, `"method":"getLedgerEntries"`, key) {
+		t.Errorf("request body %s does not carry the requested key", req)
+	}
+}
+
+func TestClient_GetTransaction_Success(t *testing.T) {
+	srv, _ := fixtureServer(t, "get_transaction_success")
+	c := NewClient(srv.URL, nil)
+
+	result, err := c.GetTransaction(context.Background(), "a55f146e117abdd29fb6643168e10f03fca79a761091355ea03effff3d44739a")
+	if err != nil {
+		t.Fatalf("GetTransaction returned unexpected error: %v", err)
+	}
+	if result.Status != GetTransactionStatusSuccess {
+		t.Errorf("Status = %q, want %q", result.Status, GetTransactionStatusSuccess)
+	}
+	if result.ApplicationOrder != 2 {
+		t.Errorf("ApplicationOrder = %d, want 2", result.ApplicationOrder)
+	}
+	if result.EnvelopeXDR == "" || result.ResultXDR == "" || result.ResultMetaXDR == "" {
+		t.Error("EnvelopeXDR/ResultXDR/ResultMetaXDR should not be empty for a SUCCESS transaction")
+	}
+	if len(result.DiagnosticEventsXDR) == 0 {
+		t.Error("DiagnosticEventsXDR should not be empty — the live response included several")
+	}
+}
+
+func TestClient_GetTransaction_NotFound(t *testing.T) {
+	srv, _ := fixtureServer(t, "get_transaction_not_found")
+	c := NewClient(srv.URL, nil)
+
+	result, err := c.GetTransaction(context.Background(), "0000000000000000000000000000000000000000000000000000000000000000")
+	if err != nil {
+		t.Fatalf("GetTransaction returned unexpected error: %v", err)
+	}
+	if result.Status != GetTransactionStatusNotFound {
+		t.Errorf("Status = %q, want %q", result.Status, GetTransactionStatusNotFound)
+	}
+	// The live node returns these present-but-zero for NOT_FOUND rather than
+	// omitting them; decoding must not choke on that, and callers must gate
+	// on Status rather than treat a zero Ledger as "unknown".
+	if result.Ledger != 0 || result.ApplicationOrder != 0 {
+		t.Errorf("expected zero-valued Ledger/ApplicationOrder for NOT_FOUND, got %d/%d", result.Ledger, result.ApplicationOrder)
+	}
+}
+
+func TestClient_SimulateTransaction_Success(t *testing.T) {
+	srv, _ := fixtureServer(t, "simulate_transaction_success")
+	c := NewClient(srv.URL, nil)
+
+	result, err := c.SimulateTransaction(context.Background(), SimulateTransactionParams{Transaction: "AAAA"})
+	if err != nil {
+		t.Fatalf("SimulateTransaction returned unexpected error: %v", err)
+	}
+	if result.Error != "" {
+		t.Errorf("Error = %q, want empty for a successful simulation", result.Error)
+	}
+	if result.MinResourceFee != "90353" {
+		t.Errorf("MinResourceFee = %q, want 90353", result.MinResourceFee)
+	}
+	if len(result.Results) != 1 {
+		t.Fatalf("got %d results, want 1", len(result.Results))
+	}
+	if result.Cost == nil || result.Cost.CPUInsns != "1635562" {
+		t.Errorf("Cost = %+v, want CPUInsns 1635562", result.Cost)
+	}
+}
+
+// TestClient_SimulateTransaction_SimulationError covers the case CLAUDE.md
+// calls out for custody's commitment verification: a simulation failure is
+// carried in the result's own Error field with HTTP 200 and no top-level
+// JSON-RPC error, not raised as a Go error from the call itself — the
+// caller must check Error explicitly.
+func TestClient_SimulateTransaction_SimulationError(t *testing.T) {
+	srv, _ := fixtureServer(t, "simulate_transaction_error")
+	c := NewClient(srv.URL, nil)
+
+	result, err := c.SimulateTransaction(context.Background(), SimulateTransactionParams{Transaction: "not-valid-base64-xdr"})
+	if err != nil {
+		t.Fatalf("SimulateTransaction returned a Go error for a simulation-level failure: %v", err)
+	}
+	if result.Error == "" {
+		t.Error("Error should be set for a failed simulation")
+	}
+}
+
+func TestClient_SendTransaction_Pending(t *testing.T) {
+	srv, _ := fixtureServer(t, "send_transaction_pending")
+	c := NewClient(srv.URL, nil)
+
+	result, err := c.SendTransaction(context.Background(), "AAAA")
+	if err != nil {
+		t.Fatalf("SendTransaction returned unexpected error: %v", err)
+	}
+	if result.Status != SendTransactionStatusPending {
+		t.Errorf("Status = %q, want %q", result.Status, SendTransactionStatusPending)
+	}
+	if result.Hash != "d8ec9b68780314ffdfdfc2194b1b35dd27d7303c3bceaef6447e31631a1419dc" {
+		t.Errorf("Hash = %q", result.Hash)
+	}
+}
+
+// TestClient_SendTransaction_RPCError covers a protocol-level JSON-RPC
+// error (malformed XDR): this must surface as a Go error, unlike
+// simulateTransaction's own result.Error.
+func TestClient_SendTransaction_RPCError(t *testing.T) {
+	srv, _ := fixtureServer(t, "send_transaction_error")
+	c := NewClient(srv.URL, nil)
+
+	_, err := c.SendTransaction(context.Background(), "not-valid-base64-xdr")
+	if err == nil {
+		t.Fatal("SendTransaction returned nil error for an RPC-level error response")
+	}
+	var rpcErr *RPCError
+	if !errors.As(err, &rpcErr) {
+		t.Fatalf("error %v does not wrap *RPCError", err)
+	}
+	if rpcErr.Code != -32602 {
+		t.Errorf("Code = %d, want -32602", rpcErr.Code)
+	}
+	if rpcErr.Message != "invalid_xdr" {
+		t.Errorf("Message = %q, want invalid_xdr", rpcErr.Message)
+	}
+}
+
+func TestClient_HTTPErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("upstream unavailable"))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewClient(srv.URL, nil)
+	_, err := c.GetLatestLedger(context.Background())
+	if err == nil {
+		t.Fatal("GetLatestLedger returned nil error for a 503 response")
+	}
+	if !containsAll(err.Error(), "503") {
+		t.Errorf("error %q does not mention the HTTP status", err.Error())
+	}
+}
+
+func TestClient_MalformedJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{not json"))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewClient(srv.URL, nil)
+	_, err := c.GetLatestLedger(context.Background())
+	if err == nil {
+		t.Fatal("GetLatestLedger returned nil error for a malformed JSON body")
+	}
+}
+
+func TestClient_ContextCancellation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewClient(srv.URL, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := c.GetLatestLedger(ctx)
+	if err == nil {
+		t.Fatal("GetLatestLedger returned nil error for an already-cancelled context")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error %v does not wrap context.Canceled", err)
+	}
+}
+
+func containsAll(s string, substrs ...string) bool {
+	for _, sub := range substrs {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
+}
