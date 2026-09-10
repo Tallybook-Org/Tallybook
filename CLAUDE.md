@@ -110,7 +110,7 @@ proofs.
 
 | Thing | Value |
 |---|---|
-| Go | Minimum 1.22. Run `go version`, pin the installed stable in the `toolchain` directive |
+| Go | 1.25 floor — `github.com/jackc/pgx/v5`'s own go.mod requires it. Run `go version`, pin the installed stable in the `toolchain` directive |
 | Postgres | 16 or newer, via `docker-compose.yml` for local dev |
 | Migrations | Numbered plain `.sql` files, applied by a tiny in-repo runner. No migration framework |
 | Logging | `log/slog`, structured, JSON handler in production |
@@ -122,8 +122,9 @@ proofs.
 the standard library. This is infrastructure that handles money; each dependency is attack
 surface and maintenance cost.
 
-For Stellar specifically: `github.com/stellar/go` provides `xdr`, `keypair`, and
-`strkey` packages you will need. **Verify the current module path, version, and the exact
+For Stellar specifically: `github.com/stellar/go-stellar-sdk` provides `xdr`, `keypair`, and
+`strkey` packages you will need. The older `github.com/stellar/go` is archived and deprecated
+upstream — do not add it. **Verify the current module path, version, and the exact
 API shapes against the real source before using them — do not write code from memory.**
 
 There is no official Go SDK for Soroban RPC. Implement `internal/stellar/rpc.go` as a thin
@@ -379,7 +380,8 @@ naming the missing variable — never start with a zero value.
 | `TB_STATEMENT_REGISTRY_ID` | `CB75TT...` | From the contracts repo README |
 | `TB_OPERATOR_ADDRESS` | `G...` | Required |
 | `TB_OPERATOR_SECRET_SOURCE` | `env` \| `file` | How the signing key is obtained |
-| `TB_OPERATOR_SECRET` | `S...` | Only when source is `env`. Never logged, never in a commit |
+| `TB_OPERATOR_SECRET` | `S...` | Only when source is `env`. Must be unset when source is `file`. Never logged, never in a commit |
+| `TB_OPERATOR_SECRET_PATH` | `/run/secrets/operator.key` | Only when source is `file`. Must be unset when source is `env`. Path itself is redacted too |
 | `TB_SAFETY_MARGIN_LEDGERS` | `1440` | Settler deadline margin |
 | `TB_MAX_EXPOSURE` | `10000000` | Stroops; triggers a sweep |
 | `TB_MAX_EXPOSURE_AGE` | `24h` | Duration |
@@ -389,7 +391,7 @@ naming the missing variable — never start with a zero value.
 | `TB_LOG_LEVEL` | `info` | |
 
 Secrets never appear in logs, error messages, metrics labels, or commits. Add a test that
-asserts the config's `String()` method redacts `TB_OPERATOR_SECRET`.
+asserts the config's `String()` method redacts `TB_OPERATOR_SECRET` and `TB_OPERATOR_SECRET_PATH`.
 
 ---
 
