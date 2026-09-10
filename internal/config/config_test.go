@@ -81,6 +81,17 @@ func TestLoad_SafetyMarginDefaultsWhenUnset(t *testing.T) {
 	}
 }
 
+// fileSourceEnv returns a valid environment configured for
+// TB_OPERATOR_SECRET_SOURCE=file, with TB_OPERATOR_SECRET removed and
+// TB_OPERATOR_SECRET_PATH pointing at path.
+func fileSourceEnv(path string) map[string]string {
+	env := validEnv()
+	env[envOperatorSecretSource] = SecretSourceFile
+	delete(env, envOperatorSecret)
+	env[envOperatorSecretPath] = path
+	return env
+}
+
 func TestLoad_SecretSourceFile(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/operator.key"
@@ -89,28 +100,72 @@ func TestLoad_SecretSourceFile(t *testing.T) {
 		t.Fatalf("writeFile: %v", err)
 	}
 
-	env := validEnv()
-	env[envOperatorSecretSource] = SecretSourceFile
-	env[envOperatorSecret] = path
-
-	cfg, err := Load(lookupFrom(env))
+	cfg, err := Load(lookupFrom(fileSourceEnv(path)))
 	if err != nil {
 		t.Fatalf("Load returned unexpected error: %v", err)
 	}
 	if cfg.OperatorSecret.Reveal() != secretValue {
 		t.Errorf("OperatorSecret.Reveal() = %q, want %q", cfg.OperatorSecret.Reveal(), secretValue)
 	}
+	if cfg.OperatorSecretPath.Reveal() != path {
+		t.Errorf("OperatorSecretPath.Reveal() = %q, want %q", cfg.OperatorSecretPath.Reveal(), path)
+	}
 }
 
 func TestLoad_SecretSourceFileMissingFile(t *testing.T) {
-	env := validEnv()
-	env[envOperatorSecretSource] = SecretSourceFile
-	env[envOperatorSecret] = "/nonexistent/path/does/not/exist"
-
+	env := fileSourceEnv("/nonexistent/path/does/not/exist")
 	_, err := Load(lookupFrom(env))
 	if err == nil {
 		t.Fatal("Load returned nil error for a nonexistent secret file")
 	}
+}
+
+func TestLoad_SecretSourceFileMissingPath(t *testing.T) {
+	env := fileSourceEnv("")
+	delete(env, envOperatorSecretPath)
+	_, err := Load(lookupFrom(env))
+	if err == nil {
+		t.Fatal("Load returned nil error with TB_OPERATOR_SECRET_PATH missing in file mode")
+	}
+	if !strings.Contains(err.Error(), envOperatorSecretPath) {
+		t.Errorf("error %q does not name %s", err.Error(), envOperatorSecretPath)
+	}
+}
+
+// TestLoad_RejectsSecretVariableForWrongMode covers the cross-field
+// validation: whichever of TB_OPERATOR_SECRET / TB_OPERATOR_SECRET_PATH
+// does not belong to the active TB_OPERATOR_SECRET_SOURCE must be unset, or
+// Load fails naming the offending (and correct) variable — a stale
+// variable left over from switching modes must not be silently ignored.
+func TestLoad_RejectsSecretVariableForWrongMode(t *testing.T) {
+	t.Run("path set while source=env", func(t *testing.T) {
+		env := validEnv() // source=env, TB_OPERATOR_SECRET already set
+		env[envOperatorSecretPath] = "/some/path"
+		_, err := Load(lookupFrom(env))
+		if err == nil {
+			t.Fatal("Load returned nil error with TB_OPERATOR_SECRET_PATH set alongside source=env")
+		}
+		if !strings.Contains(err.Error(), envOperatorSecretPath) {
+			t.Errorf("error %q does not name %s", err.Error(), envOperatorSecretPath)
+		}
+	})
+
+	t.Run("secret set while source=file", func(t *testing.T) {
+		dir := t.TempDir()
+		path := dir + "/operator.key"
+		if err := writeFile(path, "S"+strings.Repeat("F", 55)); err != nil {
+			t.Fatalf("writeFile: %v", err)
+		}
+		env := fileSourceEnv(path)
+		env[envOperatorSecret] = "S" + strings.Repeat("G", 55) // stale leftover
+		_, err := Load(lookupFrom(env))
+		if err == nil {
+			t.Fatal("Load returned nil error with TB_OPERATOR_SECRET set alongside source=file")
+		}
+		if !strings.Contains(err.Error(), envOperatorSecret) {
+			t.Errorf("error %q does not name %s", err.Error(), envOperatorSecret)
+		}
+	})
 }
 
 // TestLoad_MissingRequired exercises every required variable's absence
@@ -313,6 +368,32 @@ func TestConfig_StringRedactsSecret(t *testing.T) {
 		if !strings.Contains(rendered, "[REDACTED]") {
 			t.Errorf("rendered config does not show redaction marker: %q", rendered)
 		}
+	}
+}
+
+// TestConfig_StringRedactsSecretPath is TestConfig_StringRedactsSecret's
+// counterpart for file mode: the raw TB_OPERATOR_SECRET_PATH value, and
+// the file's contents resolved into OperatorSecret, must both stay out of
+// String()'s output.
+func TestConfig_StringRedactsSecretPath(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/very-identifying-operator-key-path.pem"
+	secretValue := "S" + strings.Repeat("H", 55)
+	if err := writeFile(path, secretValue); err != nil {
+		t.Fatalf("writeFile: %v", err)
+	}
+
+	cfg, err := Load(lookupFrom(fileSourceEnv(path)))
+	if err != nil {
+		t.Fatalf("Load returned unexpected error: %v", err)
+	}
+
+	rendered := cfg.String()
+	if strings.Contains(rendered, path) {
+		t.Errorf("rendered config leaks the operator secret path: %q", rendered)
+	}
+	if strings.Contains(rendered, secretValue) {
+		t.Errorf("rendered config leaks the operator secret: %q", rendered)
 	}
 }
 

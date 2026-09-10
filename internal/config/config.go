@@ -29,6 +29,7 @@ const (
 	envOperatorAddress      = "TB_OPERATOR_ADDRESS"
 	envOperatorSecretSource = "TB_OPERATOR_SECRET_SOURCE"
 	envOperatorSecret       = "TB_OPERATOR_SECRET"
+	envOperatorSecretPath   = "TB_OPERATOR_SECRET_PATH"
 	envSafetyMarginLedgers  = "TB_SAFETY_MARGIN_LEDGERS"
 	envMaxExposure          = "TB_MAX_EXPOSURE"
 	envMaxExposureAge       = "TB_MAX_EXPOSURE_AGE"
@@ -61,11 +62,14 @@ type Config struct {
 	StatementRegistryID string
 	OperatorAddress     string
 
-	// OperatorSecretSource is "env" or "file". OperatorSecret already holds
-	// the resolved key material either way — see Load's doc comment on how
-	// TB_OPERATOR_SECRET is interpreted for each source.
+	// OperatorSecretSource is "env" or "file". OperatorSecret holds the
+	// resolved key material either way; OperatorSecretPath holds the raw
+	// TB_OPERATOR_SECRET_PATH value and is only set when the source is
+	// "file". See Load's doc comment for the validation rules tying these
+	// together.
 	OperatorSecretSource string
 	OperatorSecret       Secret
+	OperatorSecretPath   Secret
 
 	SafetyMarginLedgers uint32
 	MaxExposure         *big.Int
@@ -86,11 +90,11 @@ func (c *Config) String() string {
 	return fmt.Sprintf(
 		"Config{DatabaseURL:%s StellarRPCURL:%s NetworkPassphrase:%s PriceBookID:%s "+
 			"StatementRegistryID:%s OperatorAddress:%s OperatorSecretSource:%s OperatorSecret:%s "+
-			"SafetyMarginLedgers:%d MaxExposure:%s MaxExposureAge:%s SettlerTick:%s "+
+			"OperatorSecretPath:%s SafetyMarginLedgers:%d MaxExposure:%s MaxExposureAge:%s SettlerTick:%s "+
 			"IndexerStartLedger:%d CollectorAddr:%s LogLevel:%s}",
 		c.DatabaseURL, c.StellarRPCURL, c.NetworkPassphrase, c.PriceBookID,
 		c.StatementRegistryID, c.OperatorAddress, c.OperatorSecretSource, c.OperatorSecret,
-		c.SafetyMarginLedgers, c.MaxExposure, c.MaxExposureAge, c.SettlerTick,
+		c.OperatorSecretPath, c.SafetyMarginLedgers, c.MaxExposure, c.MaxExposureAge, c.SettlerTick,
 		c.IndexerStartLedger, c.CollectorAddr, c.LogLevel,
 	)
 }
@@ -117,16 +121,18 @@ func LoadEnv() (*Config, error) {
 // naming the offending variable, rather than returning a Config with any
 // zero-valued field standing in for configuration that was never supplied.
 //
-// TB_OPERATOR_SECRET is interpreted according to TB_OPERATOR_SECRET_SOURCE:
-// the system prompt's env var table defines TB_OPERATOR_SECRET only for
-// source "env" and leaves source "file" without an explicit path variable.
-// The interpretation used here, deliberately: when the source is "file",
-// TB_OPERATOR_SECRET holds the filesystem path to a file containing the
-// secret (trimmed of surrounding whitespace), read once at startup. This
-// reuses the one variable the spec defines instead of inventing an
-// undocumented one, and keeps the failure mode the same in both cases — an
-// operator who sets the wrong thing in TB_OPERATOR_SECRET fails startup
-// immediately rather than the collector silently signing with a zero key.
+// TB_OPERATOR_SECRET_SOURCE selects which of two variables supplies the
+// operator's signing key, and Load rejects the other one being set at all
+// — a stale variable left over from switching modes must fail startup, not
+// be silently ignored:
+//   - source "env": TB_OPERATOR_SECRET holds the key directly.
+//     TB_OPERATOR_SECRET_PATH must be unset.
+//   - source "file": TB_OPERATOR_SECRET_PATH holds the filesystem path to
+//     a file containing the key (trimmed of surrounding whitespace), read
+//     once at startup. TB_OPERATOR_SECRET must be unset.
+//
+// OperatorSecret holds the resolved key material either way; OperatorSecretPath
+// holds the raw path in file mode only.
 func Load(lookup Lookup) (*Config, error) {
 	var errs []error
 	get := func(name string) string {
@@ -173,20 +179,37 @@ func Load(lookup Lookup) (*Config, error) {
 			envOperatorSecretSource, SecretSourceEnv, SecretSourceFile, source))
 	}
 
-	if cfg.OperatorSecretSource != "" {
-		raw := get(envOperatorSecret)
-		if raw != "" {
-			switch cfg.OperatorSecretSource {
-			case SecretSourceEnv:
-				cfg.OperatorSecret = Secret(raw)
-			case SecretSourceFile:
-				secret, err := readSecretFile(raw)
-				if err != nil {
-					errs = append(errs, fmt.Errorf("config: %s: %w", envOperatorSecret, err))
-				} else {
-					cfg.OperatorSecret = secret
-				}
+	secretRaw, secretSet := lookup(envOperatorSecret)
+	secretSet = secretSet && secretRaw != ""
+	pathRaw, pathSet := lookup(envOperatorSecretPath)
+	pathSet = pathSet && pathRaw != ""
+
+	switch cfg.OperatorSecretSource {
+	case SecretSourceEnv:
+		if secretSet {
+			cfg.OperatorSecret = Secret(secretRaw)
+		} else {
+			errs = append(errs, fmt.Errorf("config: missing required environment variable %s", envOperatorSecret))
+		}
+		if pathSet {
+			errs = append(errs, fmt.Errorf("config: %s must not be set when %s=%s; use %s instead",
+				envOperatorSecretPath, envOperatorSecretSource, SecretSourceEnv, envOperatorSecret))
+		}
+	case SecretSourceFile:
+		if pathSet {
+			cfg.OperatorSecretPath = Secret(pathRaw)
+			secret, err := readSecretFile(pathRaw)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("config: %s: %w", envOperatorSecretPath, err))
+			} else {
+				cfg.OperatorSecret = secret
 			}
+		} else {
+			errs = append(errs, fmt.Errorf("config: missing required environment variable %s", envOperatorSecretPath))
+		}
+		if secretSet {
+			errs = append(errs, fmt.Errorf("config: %s must not be set when %s=%s; use %s instead",
+				envOperatorSecret, envOperatorSecretSource, SecretSourceFile, envOperatorSecretPath))
 		}
 	}
 
