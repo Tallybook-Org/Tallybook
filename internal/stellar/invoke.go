@@ -2,7 +2,10 @@ package stellar
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"time"
 
@@ -100,11 +103,194 @@ func SimulateCall(ctx context.Context, client *Client, sourceAccount, contractID
 // This covers every write in §4 authorized by a single party who is also
 // the transaction's source account (publish, anchor, open_dispute,
 // extend_statement_ttl, and every one-way-channel mutator). resolve_dispute
-// needs a second party's authorization too; see registry.go, which passes
-// that in via invokeAndSubmit's extraAuth rather than through this
-// exported entry point.
+// needs a second party's authorization too; use InvokeAndSubmitWithAuth for
+// that (registry.go's ResolveDispute does).
 func InvokeAndSubmit(ctx context.Context, client *Client, networkPassphrase string, signer *keypair.Full, contractID, function string, args []xdr.ScVal) (xdr.ScVal, string, error) {
 	return invokeAndSubmit(ctx, client, networkPassphrase, signer, contractID, function, args, nil)
+}
+
+// InvokeAndSubmitWithAuth is InvokeAndSubmit, plus extraAuth: authorization
+// entries for parties other than signer that the call also needs — built
+// with AuthorizeInvocation. Any authorization simulation records for the
+// same address as an entry in extraAuth is superseded by that entry rather
+// than submitted alongside it: a second, unsigned template entry for an
+// address that's already properly authorized is not merely redundant, it
+// makes the whole call fail — the host authenticates the first entry it
+// finds for that address, and simulation's own template entries carry no
+// signature at all (this is not theoretical: it is exactly the failure
+// verified live while building this function — see the commit message).
+func InvokeAndSubmitWithAuth(
+	ctx context.Context,
+	client *Client,
+	networkPassphrase string,
+	signer *keypair.Full,
+	contractID, function string,
+	args []xdr.ScVal,
+	extraAuth []xdr.SorobanAuthorizationEntry,
+) (xdr.ScVal, string, error) {
+	return invokeAndSubmit(ctx, client, networkPassphrase, signer, contractID, function, args, extraAuth)
+}
+
+// AuthorizeInvocation builds a signed SorobanAuthorizationEntry authorizing
+// signer for exactly the invocation of function on the contract at
+// contractID with args — for a party other than the transaction's source
+// account whose own authorization a call requires (resolve_dispute's
+// consumer, per §4). currentLedger should be a recently fetched ledger
+// sequence; the entry is valid until currentLedger+authValidityLedgers.
+//
+// Uses classic SorobanCredentialsTypeSorobanCredentialsAddress credentials
+// (the format simulateTransaction's own recorded template entries use for
+// a plain G... account on this network, verified live), signing a
+// HashIdPreimageSorobanAuthorization payload the way js-stellar-base's
+// authorizeEntry does: a one-element Vec containing a Map of
+// {public_key, signature}, both raw bytes, both Symbol-keyed.
+func AuthorizeInvocation(
+	networkPassphrase string,
+	signer *keypair.Full,
+	contractID, function string,
+	args []xdr.ScVal,
+	currentLedger uint32,
+) (xdr.SorobanAuthorizationEntry, error) {
+	invocation := xdr.SorobanAuthorizedInvocation{
+		Function: xdr.SorobanAuthorizedFunction{
+			Type: xdr.SorobanAuthorizedFunctionTypeSorobanAuthorizedFunctionTypeContractFn,
+			ContractFn: &xdr.InvokeContractArgs{
+				ContractAddress: mustScAddress(contractID),
+				FunctionName:    xdr.ScSymbol(function),
+				Args:            args,
+			},
+		},
+	}
+
+	nonce, err := randomNonce()
+	if err != nil {
+		return xdr.SorobanAuthorizationEntry{}, fmt.Errorf("stellar: generate nonce: %w", err)
+	}
+	expirationLedger := currentLedger + authValidityLedgers
+
+	networkID := network.ID(networkPassphrase)
+	preimage := xdr.HashIdPreimage{
+		Type: xdr.EnvelopeTypeEnvelopeTypeSorobanAuthorization,
+		SorobanAuthorization: &xdr.HashIdPreimageSorobanAuthorization{
+			NetworkId:                 xdr.Hash(networkID),
+			Nonce:                     xdr.Int64(nonce),
+			SignatureExpirationLedger: xdr.Uint32(expirationLedger),
+			Invocation:                invocation,
+		},
+	}
+	preimageBytes, err := preimage.MarshalBinary()
+	if err != nil {
+		return xdr.SorobanAuthorizationEntry{}, fmt.Errorf("stellar: marshal auth preimage: %w", err)
+	}
+	payloadHash := sha256.Sum256(preimageBytes)
+
+	sig, err := signer.Sign(payloadHash[:])
+	if err != nil {
+		return xdr.SorobanAuthorizationEntry{}, fmt.Errorf("stellar: sign auth payload: %w", err)
+	}
+
+	signerAddr, err := scAddress(signer.Address())
+	if err != nil {
+		return xdr.SorobanAuthorizationEntry{}, err
+	}
+	_, rawPub, err := strkey.DecodeAny(signer.Address())
+	if err != nil {
+		return xdr.SorobanAuthorizationEntry{}, fmt.Errorf("stellar: decode signer address: %w", err)
+	}
+	pubKeyBytes := xdr.ScBytes(rawPub)
+	sigBytes := xdr.ScBytes(sig)
+	signatureVal := ScvVec([]xdr.ScVal{
+		ScvMap([]xdr.ScMapEntry{
+			MapEntry("public_key", xdr.ScVal{Type: xdr.ScValTypeScvBytes, Bytes: &pubKeyBytes}),
+			MapEntry("signature", xdr.ScVal{Type: xdr.ScValTypeScvBytes, Bytes: &sigBytes}),
+		}),
+	})
+
+	creds := xdr.SorobanAddressCredentials{
+		Address:                   signerAddr,
+		Nonce:                     xdr.Int64(nonce),
+		SignatureExpirationLedger: xdr.Uint32(expirationLedger),
+		Signature:                 signatureVal,
+	}
+	return xdr.SorobanAuthorizationEntry{
+		Credentials: xdr.SorobanCredentials{
+			Type:    xdr.SorobanCredentialsTypeSorobanCredentialsAddress,
+			Address: &creds,
+		},
+		RootInvocation: invocation,
+	}, nil
+}
+
+// authValidityLedgers is how many ledgers past currentLedger an
+// AuthorizeInvocation entry stays valid for — long enough to cover
+// submission and confirmation latency, short enough to bound how long a
+// leaked entry remains replayable.
+const authValidityLedgers = 100
+
+func randomNonce() (int64, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return 0, err
+	}
+	return int64(binary.BigEndian.Uint64(b[:])), nil
+}
+
+func mustScAddress(contractID string) xdr.ScAddress {
+	addr, err := scAddress(contractID)
+	if err != nil {
+		// contractID is a package-internal constant path in every current
+		// caller; a malformed one is a programming error, not a runtime
+		// condition worth threading an error return through every helper
+		// in this already-deep call chain for.
+		panic(err)
+	}
+	return addr
+}
+
+// mergeAuthEntries combines recorded (simulation-predicted) authorization
+// entries with extraAuth, letting extraAuth entries supersede a recorded
+// entry for the same address rather than sit alongside it.
+func mergeAuthEntries(recorded, extra []xdr.SorobanAuthorizationEntry) []xdr.SorobanAuthorizationEntry {
+	superseded := make(map[string]bool, len(extra))
+	for _, e := range extra {
+		if key, ok := authCredentialsAddressKey(e.Credentials); ok {
+			superseded[key] = true
+		}
+	}
+	merged := make([]xdr.SorobanAuthorizationEntry, 0, len(recorded)+len(extra))
+	for _, e := range recorded {
+		if key, ok := authCredentialsAddressKey(e.Credentials); ok && superseded[key] {
+			continue
+		}
+		merged = append(merged, e)
+	}
+	return append(merged, extra...)
+}
+
+// authCredentialsAddressKey returns a comparable key for the address an
+// Address or AddressV2 credential authorizes, and false for
+// SourceAccount (which has no address of its own to key by).
+func authCredentialsAddressKey(creds xdr.SorobanCredentials) (string, bool) {
+	var addr *xdr.ScAddress
+	switch creds.Type {
+	case xdr.SorobanCredentialsTypeSorobanCredentialsAddress:
+		if creds.Address == nil {
+			return "", false
+		}
+		addr = &creds.Address.Address
+	case xdr.SorobanCredentialsTypeSorobanCredentialsAddressV2:
+		if creds.AddressV2 == nil {
+			return "", false
+		}
+		addr = &creds.AddressV2.Address
+	default:
+		return "", false
+	}
+	b, err := addr.MarshalBinary()
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
 }
 
 func invokeAndSubmit(
@@ -163,11 +349,39 @@ func invokeAndSubmit(
 	if err != nil {
 		return xdr.ScVal{}, "", err
 	}
-	allAuth := append(recordedAuth, extraAuth...)
+	allAuth := mergeAuthEntries(recordedAuth, extraAuth)
 
 	finalOp, err := buildContractCallOperation(contractID, function, args, allAuth)
 	if err != nil {
 		return xdr.ScVal{}, "", err
+	}
+
+	// When extraAuth adds an authorizer the first, auth-less simulation
+	// never saw, that simulation's footprint doesn't reserve access to
+	// that authorizer's nonce ledger entry — the transaction would trap
+	// with "trying to access nonce outside of the footprint" despite a
+	// perfectly valid signature (verified live: this is exactly what
+	// happens without this second pass). Re-simulate with the real,
+	// final auth list attached whenever extraAuth is non-empty, so the
+	// footprint this call actually submits accounts for every
+	// authorizer, not just signer.
+	if len(extraAuth) > 0 {
+		finalSimTx := simTx
+		finalSimTx.Operations = []xdr.Operation{finalOp}
+		finalEnvelopeB64, err := marshalUnsignedEnvelope(finalSimTx)
+		if err != nil {
+			return xdr.ScVal{}, "", err
+		}
+		simResult, err = client.SimulateTransaction(ctx, SimulateTransactionParams{Transaction: finalEnvelopeB64})
+		if err != nil {
+			return xdr.ScVal{}, "", fmt.Errorf("stellar: re-simulate %s with full auth: %w", function, err)
+		}
+		if simResult.Error != "" {
+			return xdr.ScVal{}, "", &ErrSimulationFailed{Message: simResult.Error}
+		}
+		if len(simResult.Results) == 0 {
+			return xdr.ScVal{}, "", fmt.Errorf("stellar: re-simulate %s with full auth: no results", function)
+		}
 	}
 
 	var sorobanData xdr.SorobanTransactionData
