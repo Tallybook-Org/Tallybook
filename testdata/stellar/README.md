@@ -60,3 +60,17 @@ AddressV2` credential (as older internal notes assumed this network
 requires) failed the consumer's authentication outright — the actual
 working credential type, matching what `simulateTransaction`'s own
 recorded template already used, is the classic `SorobanCredentialsTypeSorobanCredentialsAddress`.
+
+
+## Event fixtures (internal/stellar/events.go)
+
+| File | Source |
+|---|---|
+| `events_pricebook_publish.json` | Live `getEvents` call against the real `price_book` contract; includes the exact publish event `pricebook_publish_04_gettransaction_success.json`'s transaction produced |
+| `events_statement_registry.json` | Live `getEvents` call against the real `statement_registry` contract; includes the exact anchor/dispute/resolve events the `registry_*` fixtures' transactions produced (two full cycles, seq 2 and seq 3) |
+
+one-way-channel's four events (Open, Close, Withdraw, Refund) have no
+fixture here — no live instance could be deployed to emit one; see
+channel.go's doc comment. events_test.go covers them via round trip
+instead (encode with this package's own ScVal builders, decode, compare),
+which confirms internal consistency but not a real on-chain shape.
