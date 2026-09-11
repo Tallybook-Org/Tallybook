@@ -191,8 +191,21 @@ Events: `("statement", "anchor")` with
 2. `resolve_dispute` requires **both** the operator's and the consumer's authorization.
    `stellar-cli` 28.0.0 cannot produce the second party's Soroban authorization entry —
    this is verified, not theoretical. You must construct and sign authorization entries
-   directly. Note that this network issues CAP-71 `ADDRESS_V2` credentials, so a check for
-   the plain `ADDRESS` credential type silently skips the entry.
+   directly. **Credential type does not matter here** — classic `ADDRESS` and CAP-71
+   `ADDRESS_V2` credentials both work identically; an earlier revision of this document
+   claimed `ADDRESS_V2` was required, which was wrong and has been retracted (isolated
+   with a 2×2 test matrix crossing credential type against the real variable below — see
+   `internal/stellar/invoke.go`'s doc comments, and the session artifact at
+   `/tmp/cap71-finding.md` for the full reproduction with live transaction hashes). What
+   actually matters: the transaction's resource footprint (`SorobanTransactionData`) must
+   come from a simulation that already has the second party's real, final authorization
+   entry — including its nonce — attached, or the call traps with "trying to access nonce
+   outside of the footprint" the instant `require_auth()` touches that nonce. Separately,
+   watch for a third, distinct bug: attaching two authorization entries for the same
+   address (the unsigned template `simulateTransaction` itself returns, left in place,
+   plus your own signed one appended alongside it) makes the host authenticate whichever
+   entry it finds first — if that's the unsigned one, decoding its `Void` signature as the
+   expected `Vec` fails with `UnexpectedType`. De-duplicate by address; never concatenate.
 
 ### `one-way-channel` (external, unaudited)
 

@@ -54,12 +54,30 @@ attempt at this call — built with only one simulate pass — failed on
 submission with "trying to access nonce outside of the footprint": the
 resource footprint computed by the auth-less first simulation never
 reserved access to the consumer's nonce ledger entry, because that
-simulation didn't know the consumer's authorization would exist yet. The
-same live testing also caught a second, separate bug: a `CAP-71
-AddressV2` credential (as older internal notes assumed this network
-requires) failed the consumer's authentication outright — the actual
-working credential type, matching what `simulateTransaction`'s own
-recorded template already used, is the classic `SorobanCredentialsTypeSorobanCredentialsAddress`.
+simulation didn't know the consumer's authorization would exist yet.
+**This footprint-consistency issue is the actual, sole cause of the
+original failure** — see `internal/stellar/invoke.go`'s doc comments on
+`invokeAndSubmit` and `AuthorizeInvocation`. An earlier revision of this
+file additionally claimed that CAP-71 `AddressV2` credentials failed
+authentication and that classic `SorobanCredentialsTypeSorobanCredentialsAddress`
+was a required fix; that claim was wrong and has been retracted. A clean
+2×2 test (credential type × footprint consistency, a fresh dispute per
+cell) showed both credential types succeed identically once the footprint
+is consistent, and both fail identically — same diagnostic — when it
+isn't. Credential type predicts nothing. Full reproduction with live
+transaction hashes: `/tmp/cap71-finding.md` (session artifact, not
+committed to this repository).
+
+A third, separate bug surfaced in the same debugging session and is
+unrelated to either of the above: attaching two authorization entries for
+the same address to one operation (the unsigned template entry
+`simulateTransaction` itself returns, left in place, plus a
+separately-built signed one appended alongside it) makes the host
+authenticate whichever entry it finds first for that address — if that's
+the unsigned one, decoding its `Void` signature as the expected `Vec`
+fails with `ScErrorCodeScecUnexpectedType`. Fixed by de-duplicating
+authorization entries by address (`mergeAuthEntries` in
+`internal/stellar/invoke.go`) rather than concatenating them.
 
 
 ## Event fixtures (internal/stellar/events.go)

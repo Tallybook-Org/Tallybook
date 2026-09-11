@@ -223,12 +223,22 @@ func ResolveDisputeArgs(operator string, seq uint64, resolutionHash [32]byte, am
 // the second party's authorization entry directly" CLAUDE.md §4 calls
 // out — stellar-cli 28.0.0 cannot produce it for you).
 //
-// Verified live against a real dual-authorized resolve_dispute: this
-// network's __check_auth accepts classic SorobanCredentialsTypeSorobanCredentialsAddress
-// credentials for a plain G... consumer — not CAP-71 AddressV2. A first
-// attempt using AddressV2 failed authentication; switching to Address
-// (matching what simulateTransaction's own recorded template already
-// used) succeeded. AuthorizeInvocation uses Address for this reason.
+// Verified live against a real dual-authorized resolve_dispute.
+// AuthorizeInvocation uses classic SorobanCredentialsTypeSorobanCredentialsAddress
+// credentials, matching what simulateTransaction's own recorded template
+// already uses for a plain G... consumer — but credential type is not
+// why the call succeeds. An earlier revision of this comment claimed CAP-71
+// AddressV2 credentials failed authentication and that switching to
+// classic Address was the fix; that was wrong. A clean 2×2 test (credential
+// type × whether the transaction's resource footprint was re-simulated
+// with the consumer's real, final authorization already attached, a fresh
+// dispute per cell) showed both credential types succeed when the
+// footprint is consistent and both fail identically — same diagnostic —
+// when it isn't. Footprint consistency is what invokeAndSubmit's second
+// simulate pass (invoke.go) actually fixes; see that function's doc
+// comment for the full explanation, and /tmp/cap71-finding.md (session
+// artifact, not committed) for the reproduction with live transaction
+// hashes.
 func (r *StatementRegistry) ResolveDispute(
 	ctx context.Context,
 	signer *keypair.Full,

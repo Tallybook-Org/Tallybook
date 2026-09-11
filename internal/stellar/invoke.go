@@ -117,8 +117,15 @@ func InvokeAndSubmit(ctx context.Context, client *Client, networkPassphrase stri
 // address that's already properly authorized is not merely redundant, it
 // makes the whole call fail — the host authenticates the first entry it
 // finds for that address, and simulation's own template entries carry no
-// signature at all (this is not theoretical: it is exactly the failure
-// verified live while building this function — see the commit message).
+// signature at all. Verified live: submitting both entries for one
+// address traps with diagnostic topics
+// [error ScErrorTypeSceAuth(ScErrorCodeScecInvalidAction)] and data
+// "failed account authentication with error <address>
+// ScErrorTypeSceValue(ScErrorCodeScecUnexpectedType)" — the host tried to
+// decode the unsigned entry's Void signature as the expected Vec. If you
+// see that exact error, check for a duplicate entry first; it is not the
+// footprint bug documented on invokeAndSubmit below, and not a credential
+// type problem (see AuthorizeInvocation's doc comment).
 func InvokeAndSubmitWithAuth(
 	ctx context.Context,
 	client *Client,
@@ -140,10 +147,46 @@ func InvokeAndSubmitWithAuth(
 //
 // Uses classic SorobanCredentialsTypeSorobanCredentialsAddress credentials
 // (the format simulateTransaction's own recorded template entries use for
-// a plain G... account on this network, verified live), signing a
+// a plain G... account on this network), signing a
 // HashIdPreimageSorobanAuthorization payload the way js-stellar-base's
 // authorizeEntry does: a one-element Vec containing a Map of
 // {public_key, signature}, both raw bytes, both Symbol-keyed.
+//
+// Classic Address vs. CAP-71 AddressV2 credentials made no difference in
+// testing — both authenticate identically; this function uses classic
+// Address simply because it's what simulateTransaction's own template
+// already uses, not because AddressV2 is broken or unsupported. An
+// earlier revision of this doc comment claimed AddressV2 was required and
+// that classic Address was the fix; that was wrong, and traced to
+// conflating three separate bugs hit in the same debugging session (only
+// one of which this function's design addresses):
+//
+//  1. Two authorization entries for the same address on one operation —
+//     the unsigned template entry simulateTransaction itself returns,
+//     left in place, plus a separately-built signed one appended
+//     alongside it rather than in place of it. The host authenticates
+//     whichever entry it finds first for that address; when that's the
+//     unsigned one (Signature: Void), decoding it as the expected Vec
+//     fails with "ScErrorCodeScecUnexpectedType". Fixed by
+//     mergeAuthEntries, not by this function — de-duplicate by address,
+//     never concatenate.
+//  2. The transaction's resource footprint computed from a simulation
+//     that never saw the real, final authorization entries — so the
+//     footprint doesn't reserve access to the second party's nonce ledger
+//     entry, and execution traps with "trying to access nonce outside of
+//     the footprint" the instant require_auth() touches that nonce. Fixed
+//     by invokeAndSubmit's second simulate pass, not by this function —
+//     see its comment below. This was the actual, sole cause of the
+//     original resolve_dispute failure.
+//  3. Credential type (this function's choice of Address over AddressV2).
+//     Isolated with a clean 2×2 matrix (credential type × footprint
+//     consistency, a fresh dispute per cell) once bugs 1 and 2 above were
+//     already fixed: AddressV2 succeeded exactly as often as Address did
+//     (both cells with a consistent footprint succeeded; both cells
+//     without one failed, with the byte-identical diagnostic in both
+//     cases). Credential type predicts nothing. Full reproduction,
+//     including live transaction hashes for all four cells, is the
+//     session artifact at /tmp/cap71-finding.md.
 func AuthorizeInvocation(
 	networkPassphrase string,
 	signer *keypair.Full,
@@ -360,11 +403,22 @@ func invokeAndSubmit(
 	// never saw, that simulation's footprint doesn't reserve access to
 	// that authorizer's nonce ledger entry — the transaction would trap
 	// with "trying to access nonce outside of the footprint" despite a
-	// perfectly valid signature (verified live: this is exactly what
-	// happens without this second pass). Re-simulate with the real,
-	// final auth list attached whenever extraAuth is non-empty, so the
-	// footprint this call actually submits accounts for every
-	// authorizer, not just signer.
+	// perfectly valid signature. Re-simulate with the real, final auth
+	// list attached whenever extraAuth is non-empty, so the footprint
+	// this call actually submits accounts for every authorizer, not just
+	// signer.
+	//
+	// This — not credential type — is the actual, sole cause of the
+	// resolve_dispute failure an earlier revision of this codebase
+	// misattributed to CAP-71 AddressV2 credentials. Verified with a
+	// clean 2×2 matrix (credential type × whether this re-simulation
+	// happens, a fresh dispute per cell, on the real statement_registry
+	// testnet contract): both credential types succeeded whenever this
+	// re-simulation ran, and both failed identically — same diagnostic,
+	// same "trying to access nonce outside of the footprint" — whenever
+	// it didn't. See /tmp/cap71-finding.md (session artifact, not
+	// committed) for the full reproduction with live transaction hashes
+	// for all four cells.
 	if len(extraAuth) > 0 {
 		finalSimTx := simTx
 		finalSimTx.Operations = []xdr.Operation{finalOp}
