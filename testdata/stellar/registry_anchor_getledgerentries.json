@@ -1,0 +1,15 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "entries": [
+      {
+        "key": "AAAAAAAAAABpK5717uJ9Du7jk5unHwUWIJSu8M5gAX66v/CbtdNkTQ==",
+        "xdr": "AAAAAAAAAABpK5717uJ9Du7jk5unHwUWIJSu8M5gAX66v/CbtdNkTQAAABdIDMx7AEZgPQAAAAoAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAAAAAAAAAAAAAAAAAADAAAAAABGYa0AAAAAaqNKBA==",
+        "lastModifiedLedgerSeq": 4612525,
+        "extXdr": "AAAAAA=="
+      }
+    ],
+    "latestLedger": 4612536
+  }
+}
