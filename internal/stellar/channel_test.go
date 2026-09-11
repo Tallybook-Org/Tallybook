@@ -106,12 +106,14 @@ func TestBuildCommitment_RejectsNilAmount(t *testing.T) {
 
 // The remaining tests in this file exercise Channel's RPC-calling paths
 // against constructed-but-schema-accurate responses, not a genuine chain
-// capture: channel.go's doc comment explains that deploying a real
-// instance to record one against failed for reasons unrelated to this
-// package. What's actually being tested here is this package's own
-// request-building and response-decoding — the RPC round trip itself
-// (SimulateCall, InvokeAndSubmit) is the same code already exercised live
-// by pricebook_test.go and registry_test.go.
+// capture. That's not because the contract is broken — see channel.go's
+// doc comment: it deploys and works fine once you know to give
+// commitment_key as hex — it's simply that no live-deployed instance's
+// fixtures were captured for this test file specifically. What's
+// actually being tested here is this package's own request-building and
+// response-decoding — the RPC round trip itself (SimulateCall,
+// InvokeAndSubmit) is the same code already exercised live by
+// pricebook_test.go and registry_test.go.
 
 func TestChannel_Getters(t *testing.T) {
 	from := "GAAACAQDAQCQMBYIBEFAWDANBYHRAEISCMKBKFQXDAMRUGY4DUPB7JZX"

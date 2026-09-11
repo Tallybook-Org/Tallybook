@@ -20,18 +20,31 @@ import (
 // writing) rather than assumed — §4 documents this contract only at the
 // level of function and getter names, deferring detail to that repo.
 //
-// Live invocation could not be verified end to end the way price_book's
-// and statement_registry's bindings were: deploying a fresh instance on
-// testnet to test against failed with a WASM trap ("UnreachableCodeReached")
-// in __constructor that reproduces even with a completely empty
-// constructor body (verified by bisection — an empty-body rebuild trapped
-// identically), meaning it is a toolchain/deployment-environment issue
-// unrelated to the contract's actual logic or to anything in this package.
-// What's verified here instead: the commitment encoding, against the
-// exact ScVal::Map format the contract's own doc comments specify
-// (independently derived and checked, the same way internal/merkle's leaf
-// encoding was — see channel_test.go), and event decoding, against the
-// contract's real #[contractevent] struct definitions (see events.go).
+// Live invocation was not verified end to end the way price_book's and
+// statement_registry's bindings were at the time this file was first
+// written: deploying a fresh instance on testnet with `stellar contract
+// deploy` trapped with "UnreachableCodeReached" in __constructor, which
+// at the time looked like a dead end (it reproduced even with a
+// completely empty constructor body). It wasn't one. Root-caused since:
+// stellar-cli 28.0.0 mis-encodes a BytesN<32> CLI argument — this
+// contract's commitment_key in particular — when it's given as a G...
+// strkey address rather than hex, tripping the trap the instant the
+// constructor touches the value, before any of the contract's own logic
+// runs. The contract itself is fine; deploying it with commitment_key as
+// hex works and was confirmed live (deploy, then real token/from/
+// deposited/balance/refund_waiting_period reads all correct). See
+// docs/operator-runbook.md for the working deploy command and full
+// detail. This package's bindings don't touch deployment at all — they
+// only invoke an already-deployed instance — so nothing here changes as
+// a result; this note exists so the trap isn't mistaken for a live
+// contract defect by anyone reading this file.
+//
+// What's independently verified here regardless: the commitment
+// encoding, against the exact ScVal::Map format the contract's own doc
+// comments specify (independently derived and checked, the same way
+// internal/merkle's leaf encoding was — see channel_test.go), and event
+// decoding, against the contract's real #[contractevent] struct
+// definitions (see events.go).
 type Channel struct {
 	Client            *Client
 	ContractID        string
