@@ -41,6 +41,14 @@ type SubmittedCommitment struct {
 	Channel          string
 	CumulativeAmount *big.Int
 	Signature        []byte
+	// TrustedSignerKey must be this channel's real commitment_key, sourced
+	// from the indexer's durable channel-state tracking (captured once at
+	// channel-open time; §4 exposes no on-chain getter for it) — never a
+	// value read off the payer's own request. It is NOT the channel's
+	// `from` (funder) Stellar account address, which is a different value
+	// entirely; see VerifyCommitment's doc comment for why the distinction
+	// matters and why this is the caller's responsibility, not this
+	// package's.
 	TrustedSignerKey ed25519.PublicKey
 }
 
@@ -115,6 +123,11 @@ func (s *Store) Submit(ctx context.Context, channel ChannelReader, sc SubmittedC
 		return nil, ErrNilAmount
 	}
 
+	// sc.TrustedSignerKey must already be the caller's indexed
+	// commitment_key for this channel, not the payer's own claim — see
+	// SubmittedCommitment.TrustedSignerKey's doc comment. Submit trusts
+	// whatever key it's handed here; it does not, and cannot, verify that
+	// the key itself is the right one.
 	valid, err := VerifyCommitment(ctx, channel, sc.TrustedSignerKey, sc.CumulativeAmount, sc.Signature)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrVerificationIncomplete, err)

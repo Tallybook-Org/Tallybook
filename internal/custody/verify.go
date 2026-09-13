@@ -61,6 +61,19 @@ type ChannelReader interface {
 // this." Money is on the line, so the stricter reading wins — a
 // commitment claiming to be signed by some other key is not verified
 // against the wrong key, it is simply invalid.
+//
+// Concretely, once the collector actually calls this (not yet wired up):
+// trustedSignerKey must be the channel's real commitment_key, captured once
+// when the channel was opened and tracked durably by the indexer's channel
+// state (built later, §2) — never read from the incoming commitment or any
+// other value the payer supplies with the request. commitment_key is NOT
+// the same value as the channel's `from` getter: `from` is the funder's
+// Stellar account address, commitment_key is a separate raw ed25519 key
+// with no on-chain getter at all (see channel.go's Settle/Close doc
+// comments — "via the commitment_key, not a Stellar account"). Sourcing
+// trustedSignerKey from `from` instead of the indexed commitment_key would
+// check a real on-chain value, but the wrong one, and silently accept
+// commitments no one intended to authorize this way.
 func VerifyCommitment(ctx context.Context, channel ChannelReader, trustedSignerKey ed25519.PublicKey, amount *big.Int, signature []byte) (bool, error) {
 	if amount == nil {
 		return false, ErrNilAmount
