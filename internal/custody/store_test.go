@@ -274,6 +274,56 @@ func TestStore_Submit_RejectsMonotonicRegression(t *testing.T) {
 	}
 }
 
+// TestStore_Submit_ExactRepeatIsIdempotentNotMonotonicViolation is the
+// boundary the trigger's strict "<" (not "<=") is there to draw: an exact
+// repeat of the current highest cumulative_amount is not a regression, it
+// is the same commitment arriving twice — the shape a payer's client retry
+// takes. The trigger must let it through so the table's own UNIQUE
+// constraint, not TB001, is what turns the second insert into
+// ON CONFLICT DO NOTHING, and Submit must in turn surface that as a
+// successful, idempotent read-back rather than any error — ErrMonotonicViolation
+// least of all.
+func TestStore_Submit_ExactRepeatIsIdempotentNotMonotonicViolation(t *testing.T) {
+	pool := testStorePool(t)
+	s := NewStore(pool)
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	message := []byte("commitment message")
+	sig := ed25519.Sign(priv, message)
+	channel := fakeChannelReader{message: message}
+	sc := SubmittedCommitment{Channel: "channel-exact-repeat", CumulativeAmount: big.NewInt(1000), Signature: sig, TrustedSignerKey: pub}
+
+	first, err := s.Submit(context.Background(), channel, sc)
+	if err != nil {
+		t.Fatalf("first Submit returned unexpected error: %v", err)
+	}
+
+	// Same channel, same amount, same signature — submitted again, exactly
+	// as a client retrying the identical commitment would.
+	second, err := s.Submit(context.Background(), channel, sc)
+	if errors.Is(err, ErrMonotonicViolation) {
+		t.Fatalf("second Submit of an exact repeat surfaced ErrMonotonicViolation: %v — the trigger's condition "+
+			"must be a strict less-than, not <=, so an exact repeat of the current max falls through to the "+
+			"UNIQUE constraint instead of raising TB001", err)
+	}
+	if err != nil {
+		t.Fatalf("second Submit of an exact repeat returned unexpected error: %v", err)
+	}
+	if !second.AlreadyRecorded {
+		t.Error("second Submit of an exact repeat reported AlreadyRecorded=false, want true")
+	}
+	if second.ID != first.ID {
+		t.Errorf("second Submit's ID = %d, want %d (same row as the first)", second.ID, first.ID)
+	}
+
+	if got := rowCount(t, pool, "channel-exact-repeat"); got != 1 {
+		t.Errorf("channel-exact-repeat has %d rows, want 1 (no duplicate written)", got)
+	}
+}
+
 func TestStore_Submit_NilAmount(t *testing.T) {
 	pool := testStorePool(t)
 	s := NewStore(pool)
